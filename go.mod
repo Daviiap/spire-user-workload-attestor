@@ -4,8 +4,6 @@ go 1.23.3
 
 require github.com/hashicorp/go-hclog v1.6.3
 
-require golang.org/x/crypto v0.32.0
-
 require (
 	github.com/ebitengine/purego v0.8.1 // indirect
 	github.com/go-ole/go-ole v1.2.6 // indirect

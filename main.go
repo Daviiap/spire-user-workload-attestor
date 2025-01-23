@@ -51,16 +51,18 @@ func (ps PSProcessInfo) NamespacedExe() string {
 	return getProcPath(ps.Pid, "exe")
 }
 
-// Groups returns the supplementary group IDs
-// This is a custom implementation that only works for linux until the next issue is fixed
-// https://github.com/shirou/gopsutil/issues/913
+// Groups returns the supplementary group IDs.
+// This implementation currently only supports Linux.
 func (ps PSProcessInfo) Groups() ([]string, error) {
 	if runtime.GOOS != "linux" {
 		return []string{}, nil
 	}
 
 	statusPath := getProcPath(ps.Pid, "status")
+	return parseProcStatusGroups(statusPath)
+}
 
+func parseProcStatusGroups(statusPath string) ([]string, error) {
 	f, err := os.Open(statusPath)
 	if err != nil {
 		return nil, err
@@ -75,18 +77,12 @@ func (ps PSProcessInfo) Groups() ([]string, error) {
 			continue
 		}
 
-		key := strings.ToLower(strings.TrimSpace(parts[0]))
-		if key == "groups" {
-			value := strings.TrimSpace(parts[1])
-			return strings.Fields(value), nil
+		if strings.ToLower(strings.TrimSpace(parts[0])) == "groups" {
+			return strings.Fields(strings.TrimSpace(parts[1])), nil
 		}
 	}
 
-	if err := scnr.Err(); err != nil {
-		return nil, err
-	}
-
-	return []string{}, nil
+	return nil, scnr.Err()
 }
 
 type Plugin struct {
@@ -108,84 +104,106 @@ func (p *Plugin) Attest(ctx context.Context, req *workloadattestorv1.AttestReque
 		return nil, err
 	}
 
-	proc, err := p.hooks.newProcess(req.Pid)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to get process: %v", err)
-	}
-
-	var selectorValues []string = []string{"new:true"}
-
-	uid, err := p.getUID(proc)
+	selectorValues, err := p.collectSelectorValues(req.Pid, config)
 	if err != nil {
 		return nil, err
 	}
-	selectorValues = append(selectorValues, makeSelectorValue("uid", uid))
-
-	if user, ok := p.getUserName(uid); ok {
-		selectorValues = append(selectorValues, makeSelectorValue("user", user))
-	}
-
-	gid, err := p.getGID(proc)
-	if err != nil {
-		return nil, err
-	}
-	selectorValues = append(selectorValues, makeSelectorValue("gid", gid))
-
-	if group, ok := p.getGroupName(gid); ok {
-		selectorValues = append(selectorValues, makeSelectorValue("group", group))
-	}
-
-	sgIDs, err := proc.Groups()
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "supplementary GIDs lookup: %v", err)
-	}
-
-	for _, sgID := range sgIDs {
-		selectorValues = append(selectorValues, makeSelectorValue("supplementary_gid", sgID))
-
-		if sGroup, ok := p.getGroupName(sgID); ok {
-			selectorValues = append(selectorValues, makeSelectorValue("supplementary_group", sGroup))
-		}
-	}
-
-	if config.DiscoverWorkloadPath {
-		processPath, err := p.getPath(proc)
-		if err != nil {
-			return nil, err
-		}
-		selectorValues = append(selectorValues, makeSelectorValue("path", processPath))
-
-		if config.WorkloadSizeLimit >= 0 {
-			exePath, err := p.getNamespacedPath(proc)
-			if err != nil {
-				return nil, status.Error(codes.Internal, err.Error())
-			}
-
-			sha256Digest, err := GetSHA256Digest(exePath, config.WorkloadSizeLimit)
-			if err != nil {
-				return nil, status.Error(codes.Internal, err.Error())
-			}
-			selectorValues = append(selectorValues, makeSelectorValue("sha256", sha256Digest))
-		}
-	}
-
-	selectorValues = append(selectorValues, "new:true")
 
 	return &workloadattestorv1.AttestResponse{
 		SelectorValues: selectorValues,
 	}, nil
 }
 
+func (p *Plugin) collectSelectorValues(pid int32, config *Config) ([]string, error) {
+	proc, err := p.hooks.newProcess(pid)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to get process: %v", err)
+	}
+
+	var selectorValues []string
+	selectorValues = append(selectorValues, "new:true")
+
+	if uid, err := p.getUID(proc); err == nil {
+		selectorValues = append(selectorValues, makeSelectorValue("uid", uid))
+		if user, ok := p.getUserName(uid); ok {
+			selectorValues = append(selectorValues, makeSelectorValue("user", user))
+		}
+	}
+
+	if gid, err := p.getGID(proc); err == nil {
+		selectorValues = append(selectorValues, makeSelectorValue("gid", gid))
+		if group, ok := p.getGroupName(gid); ok {
+			selectorValues = append(selectorValues, makeSelectorValue("group", group))
+		}
+	}
+
+	if sgIDs, err := proc.Groups(); err == nil {
+		for _, sgID := range sgIDs {
+			selectorValues = append(selectorValues, makeSelectorValue("supplementary_gid", sgID))
+			if sGroup, ok := p.getGroupName(sgID); ok {
+				selectorValues = append(selectorValues, makeSelectorValue("supplementary_group", sGroup))
+			}
+		}
+	}
+
+	if config.DiscoverWorkloadPath {
+		if pathValues, err := p.buildPathSelectors(proc, config); err == nil {
+			selectorValues = append(selectorValues, pathValues...)
+		}
+	}
+
+	return selectorValues, nil
+}
+
+func (p *Plugin) buildPathSelectors(proc processInfo, config *Config) ([]string, error) {
+	processPath, err := p.getPath(proc)
+	if err != nil {
+		return nil, err
+	}
+
+	selectorValues := []string{makeSelectorValue("path", processPath)}
+
+	if config.WorkloadSizeLimit >= 0 {
+		nsPath, err := p.getNamespacedPath(proc)
+		if err != nil {
+			return nil, status.Error(codes.Internal, err.Error())
+		}
+
+		sha256Digest, err := GetSHA256Digest(nsPath, config.WorkloadSizeLimit)
+		if err != nil {
+			return nil, status.Error(codes.Internal, err.Error())
+		}
+		selectorValues = append(selectorValues, makeSelectorValue("sha256", sha256Digest))
+	}
+
+	return selectorValues, nil
+}
+
 func (p *Plugin) Configure(ctx context.Context, req *configv1.ConfigureRequest) (*configv1.ConfigureResponse, error) {
-	config := new(Config)
-	if err := hcl.Decode(config, req.HclConfiguration); err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "failed to decode configuration: %v", err)
+	config, err := parseConfig(req.HclConfiguration)
+	if err != nil {
+		return nil, err
 	}
 	p.setConfig(config)
-	p.hooks.newProcess = func(pid int32) (processInfo, error) { p, err := process.NewProcess(pid); return PSProcessInfo{p}, err }
+	p.initializeHooks()
+	return &configv1.ConfigureResponse{}, nil
+}
+
+func parseConfig(hclConfig string) (*Config, error) {
+	config := new(Config)
+	if err := hcl.Decode(config, hclConfig); err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "failed to decode configuration: %v", err)
+	}
+	return config, nil
+}
+
+func (p *Plugin) initializeHooks() {
+	p.hooks.newProcess = func(pid int32) (processInfo, error) {
+		pr, err := process.NewProcess(pid)
+		return PSProcessInfo{pr}, err
+	}
 	p.hooks.lookupUserByID = user.LookupId
 	p.hooks.lookupGroupByID = user.LookupGroupId
-	return &configv1.ConfigureResponse{}, nil
 }
 
 func (p *Plugin) SetLogger(logger hclog.Logger) {
@@ -194,8 +212,8 @@ func (p *Plugin) SetLogger(logger hclog.Logger) {
 
 func (p *Plugin) setConfig(config *Config) {
 	p.configMtx.Lock()
+	defer p.configMtx.Unlock()
 	p.config = config
-	p.configMtx.Unlock()
 }
 
 func (p *Plugin) getConfig() (*Config, error) {
@@ -217,18 +235,13 @@ func main() {
 
 func (p *Plugin) getUID(proc processInfo) (string, error) {
 	uids, err := proc.Uids()
-	if err != nil {
+	if err != nil || len(uids) == 0 {
 		return "", status.Errorf(codes.Internal, "UIDs lookup: %v", err)
 	}
-
-	switch len(uids) {
-	case 0:
-		return "", status.Error(codes.Internal, "UIDs lookup: no UIDs for process")
-	case 1:
+	if len(uids) == 1 {
 		return fmt.Sprint(uids[0]), nil
-	default:
-		return fmt.Sprint(uids[1]), nil
 	}
+	return fmt.Sprint(uids[1]), nil
 }
 
 func (p *Plugin) getUserName(uid string) (string, bool) {
@@ -241,18 +254,13 @@ func (p *Plugin) getUserName(uid string) (string, bool) {
 
 func (p *Plugin) getGID(proc processInfo) (string, error) {
 	gids, err := proc.Gids()
-	if err != nil {
+	if err != nil || len(gids) == 0 {
 		return "", status.Errorf(codes.Internal, "GIDs lookup: %v", err)
 	}
-
-	switch len(gids) {
-	case 0:
-		return "", status.Error(codes.Internal, "GIDs lookup: no GIDs for process")
-	case 1:
+	if len(gids) == 1 {
 		return fmt.Sprint(gids[0]), nil
-	default:
-		return fmt.Sprint(gids[1]), nil
 	}
+	return fmt.Sprint(gids[1]), nil
 }
 
 func (p *Plugin) getGroupName(gid string) (string, bool) {
@@ -268,7 +276,6 @@ func (p *Plugin) getPath(proc processInfo) (string, error) {
 	if err != nil {
 		return "", status.Errorf(codes.Internal, "path lookup: %v", err)
 	}
-
 	return path, nil
 }
 
@@ -299,12 +306,8 @@ func GetSHA256Digest(path string, limit int64) (string, error) {
 	defer f.Close()
 
 	if limit > 0 {
-		fi, err := f.Stat()
-		if err != nil {
-			return "", fmt.Errorf("SHA256 digest: %w", err)
-		}
-		if fi.Size() > limit {
-			return "", fmt.Errorf("SHA256 digest: workload %s exceeds size limit (%d > %d)", path, fi.Size(), limit)
+		if err := checkFileSize(f, limit); err != nil {
+			return "", err
 		}
 	}
 
@@ -313,4 +316,15 @@ func GetSHA256Digest(path string, limit int64) (string, error) {
 		return "", fmt.Errorf("SHA256 digest: %w", err)
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+func checkFileSize(f *os.File, limit int64) error {
+	fi, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("SHA256 digest: %w", err)
+	}
+	if fi.Size() > limit {
+		return fmt.Errorf("SHA256 digest: workload %s exceeds size limit (%d > %d)", f.Name(), fi.Size(), limit)
+	}
+	return nil
 }
