@@ -4,7 +4,8 @@ import (
 	"context"
 	"sync"
 	"wl/plugin/domain"
-	"wl/plugin/infrastructure"
+	uamAdptr "wl/plugin/infrastructure/userAttestationModule"
+	uasAdptr "wl/plugin/infrastructure/userAuthService"
 	"wl/plugin/presentation"
 
 	"github.com/hashicorp/go-hclog"
@@ -41,8 +42,8 @@ func (p *Plugin) Attest(ctx context.Context, req *workloadattestorv1.AttestReque
 		return nil, err
 	}
 
-	p.SetUserAttestorModule(infrastructure.UserAttestorModuleAdaptor{SocketPath: config.UserAttestationModuleSocketPath})
-	p.SetUserAuthService(infrastructure.UserAuthServiceAdaptor{ServiceURL: config.UserAttestationServiceURL})
+	p.SetUserAttestorModule(uamAdptr.UserAttestorModuleAdaptor{SocketPath: config.UserAttestationModuleSocketPath})
+	p.SetUserAuthService(uasAdptr.UserAuthServiceAdaptor{ServiceURL: config.UserAttestationServiceURL})
 
 	// 1. Communicate with user attestor module to get data
 	attestationData, err := p.userAttestorModule.GetUserAttestationData()
@@ -52,8 +53,8 @@ func (p *Plugin) Attest(ctx context.Context, req *workloadattestorv1.AttestReque
 	}
 	// 2. Communicate with user auth service to validate token and data
 	attestationResult, err := p.userAuthService.ValidateData(attestationData)
-	if err != nil {
-		p.logger.Error("Failed to validate data", "error", err)
+	if err != nil || !attestationResult.IsValid {
+		p.logger.Error("Failed to validate data "+attestationResult.Message, "error", err)
 		return nil, err
 	}
 	// 3. return selectors

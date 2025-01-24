@@ -1,0 +1,38 @@
+syntax = "proto3";
+
+package user_attestor;
+
+option go_package = "proto/user_attestor;user_attestor";
+
+// Message definitions
+message UserAttestation {
+  string token = 1;
+  UserInfo user_info = 2;
+}
+
+message UserInfo {
+  string name = 1;
+  string secret = 2;
+  SystemInfo system_info = 3;
+}
+
+message SystemInfo {
+  string user_id = 1;
+  string username = 2;
+  string group_id = 3;
+  string group_name = 4;
+  repeated GroupInfo supplementary_groups = 5;
+}
+
+message GroupInfo {
+  string group_id = 1;
+  string group_name = 2;
+}
+
+// Define the service
+service AttestationService {
+  rpc GetUserAttestation(Empty) returns (UserAttestation);
+}
+
+// Define an empty message type
+message Empty {}
