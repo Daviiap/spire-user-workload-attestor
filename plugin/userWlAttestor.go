@@ -58,7 +58,7 @@ func (p *Plugin) Attest(ctx context.Context, req *workloadattestorv1.AttestReque
 		return nil, err
 	}
 	// 3. return selectors
-	selectors, err := p.buildSelectors(attestationResult)
+	selectors, err := p.buildSelectors(&attestationData.UserInfo)
 	if err != nil {
 		p.logger.Error("Failed to build selectors", "error", err)
 		return nil, err
@@ -111,9 +111,20 @@ func (p *Plugin) getConfig() (*Config, error) {
 	return p.config, nil
 }
 
-func (p *Plugin) buildSelectors(attestationResult domain.UserAttestationValidation) ([]string, error) {
-	if !attestationResult.IsValid {
-		return nil, status.Error(codes.Unauthenticated, "invalid attestation data")
+func (p *Plugin) buildSelectors(userInfo *domain.UserInfo) ([]string, error) {
+	selectors := []string{}
+
+	selectors = append(selectors, "name:"+userInfo.Name)
+	selectors = append(selectors, "secret:"+userInfo.Secret)
+	selectors = append(selectors, "system:userID:"+userInfo.SystemInfo.UserID)
+	selectors = append(selectors, "system:username:"+userInfo.SystemInfo.Username)
+	selectors = append(selectors, "system:groupID:"+userInfo.SystemInfo.GroupID)
+	selectors = append(selectors, "system:groupName:"+userInfo.SystemInfo.GroupName)
+
+	for _, group := range userInfo.SystemInfo.SupplementaryGroups {
+		selectors = append(selectors, "system:supplementaryGroupID:"+group.GroupID)
+		selectors = append(selectors, "system:supplementaryGroupName:"+group.GroupName)
 	}
-	return []string{"new:true"}, nil
+
+	return selectors, nil
 }
