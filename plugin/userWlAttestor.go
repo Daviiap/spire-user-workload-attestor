@@ -116,14 +116,14 @@ func (p *Plugin) buildSelectors(userInfo *domain.UserInfo) ([]string, error) {
 
 	selectors = append(selectors, "name:"+userInfo.Name)
 	selectors = append(selectors, "secret:"+userInfo.Secret)
-	selectors = append(selectors, "system:userID:"+userInfo.SystemInfo.UserID)
+	selectors = append(selectors, "system:user_id:"+userInfo.SystemInfo.UserID)
 	selectors = append(selectors, "system:username:"+userInfo.SystemInfo.Username)
-	selectors = append(selectors, "system:groupID:"+userInfo.SystemInfo.GroupID)
+	selectors = append(selectors, "system:group_id:"+userInfo.SystemInfo.GroupID)
 	selectors = append(selectors, "system:groupName:"+userInfo.SystemInfo.GroupName)
 
 	for _, group := range userInfo.SystemInfo.SupplementaryGroups {
-		selectors = append(selectors, "system:supplementaryGroupID:"+group.GroupID)
-		selectors = append(selectors, "system:supplementaryGroupName:"+group.GroupName)
+		selectors = append(selectors, "system:supplementary_group_id:"+group.GroupID)
+		selectors = append(selectors, "system:supplementary_group_name:"+group.GroupName)
 	}
 
 	return selectors, nil
